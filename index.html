@@ -30,6 +30,7 @@
 <body>
     <div id="root"></div>
 
+    <script src="./firebase-config.js"></script>
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
 
@@ -90,7 +91,7 @@
             }
         };
 
-        const LoginView = ({ authMethods, authInstance, user }) => {
+        const LoginView = ({ authMethods, authInstance, user, firebaseError }) => {
             const [isLogin, setIsLogin] = useState(true);
             const [email, setEmail] = useState('');
             const [password, setPassword] = useState('');
@@ -267,6 +268,7 @@
                         </div>
                         
                         {error && <div className="bg-red-50 text-red-600 p-4 rounded-xl mb-6 text-sm font-semibold border border-red-200 flex items-start gap-2"><i className="fa-solid fa-circle-exclamation mt-1"></i> {error}</div>}
+                        {firebaseError && <div className="bg-amber-50 text-amber-800 p-4 rounded-xl mb-6 text-sm font-semibold border border-amber-200 flex items-start gap-2"><i className="fa-solid fa-triangle-exclamation mt-1"></i> {firebaseError}</div>}
                         
                         <form onSubmit={handleSubmit} className="space-y-5">
                             <div>
@@ -300,7 +302,7 @@
                             
                             <button type="submit" disabled={loading || (!isLogin && !isFormValid) || (!authMethods)} className="w-full bg-[#8b9ff7] hover:bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg transition-transform transform hover:-translate-y-1 disabled:opacity-50 disabled:transform-none text-lg mt-4 flex items-center justify-center gap-2">
                                 {loading ? <i className="fa-solid fa-spinner fa-spin"></i> : null}
-                                {!authMethods ? 'Connecting to Cloud...' : (isLogin ? 'Secure Login' : 'Create & Link Cloud Profile')}
+                                {!authMethods ? (firebaseError ? 'Firebase setup required' : 'Connecting to Cloud...') : (isLogin ? 'Secure Login' : 'Create & Link Cloud Profile')}
                             </button>
                         </form>
                         
@@ -2698,20 +2700,24 @@
             const [userAuth, setUserAuth] = useState(null);
             const [firebaseMethods, setFirebaseMethods] = useState(null);
             const [firebaseDb, setFirebaseDb] = useState(null);
+            const [firebaseError, setFirebaseError] = useState('');
             const appIdRef = useRef('default-app-id');
             const isMaster = userEmail === 'unlimitedgyantest@gmail.com';
 
             useEffect(() => {
                 const initCloudDB = async () => {
                     try {
-                        if (typeof __firebase_config === 'undefined') throw new Error("No config available");
-                        appIdRef.current = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                        const injectedConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : window.UNLIMITED_GYAN_FIREBASE_CONFIG;
+                        if (!injectedConfig) throw new Error("Firebase config missing");
+                        const firebaseConfig = typeof injectedConfig === 'string' ? JSON.parse(injectedConfig) : injectedConfig;
+                        if (!firebaseConfig.apiKey || !firebaseConfig.projectId || !firebaseConfig.appId) throw new Error("Incomplete Firebase Web App config");
+                        appIdRef.current = typeof __app_id !== 'undefined' ? __app_id : (window.UNLIMITED_GYAN_FIREBASE_APP_ID || firebaseConfig.appId || 'default-app-id');
                         
                         const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
                         const authModule = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
                         const { getFirestore, doc, getDoc, setDoc, collection, addDoc, getDocs, deleteDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
 
-                        const app = initializeApp(JSON.parse(__firebase_config));
+                        const app = initializeApp(firebaseConfig);
                         const auth = authModule.getAuth(app);
                         const db = getFirestore(app);
                         setFirebaseDb(db);
@@ -2752,45 +2758,11 @@
                                     const docSnap = await getDoc(docRef);
                                     if (docSnap.exists()) { setCompletedTests(docSnap.data()); } 
                                     else { setCompletedTests({}); }
-                                } catch(e) {}
-
-                                try {
-                                    const colRef = collection(db, 'artifacts', appIdRef.current, 'public', 'data', 'custom_html_tests');
-                                    const testsSnap = await getDocs(colRef);
-                                    let fetched = [];
-                                    testsSnap.forEach(d => fetched.push({ id: d.id, ...d.data() }));
-                                    if(fetched.length > 0) {
-                                        fetched.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-                                        setUploadedTests(fetched);
-                                        localStorage.setItem('ug_global_tests', JSON.stringify(fetched));
-                                    }
-                                } catch(err) { console.error("Error fetching custom tests", err); }
-                            } else {
-                                setUserEmail('Not Logged In');
-                                setCompletedTests({});
-                                setCurrentView(TEST_TYPES.LOGIN);
-                            }
-                        });
-                    } catch(e) { 
-                        console.log("Using Safe Mock Fallback to prevent loading freeze.");
-                        const mockMethods = {
-                            signInWithEmailAndPassword: async (auth, e, p) => {
-                                if (e === 'unlimitedgyantest@gmail.com' && p !== 'Unlimited@209121') {
-                                    throw new Error("Master account ka password galat hai.");
-                                }
-                                const u = { uid: 'user_' + Date.now(), email: e };
-                                setUserAuth(u); setUserEmail(e); setCurrentView(TEST_TYPES.MOCK_SERIES); return { user: u };
-                            },
-                            createUserWithEmailAndPassword: async (auth, e, p) => {
-                                const u = { uid: 'user_' + Date.now(), email: e };
-                                setUserAuth(u); setUserEmail(e); setCurrentView(TEST_TYPES.MOCK_SERIES); return { user: u };
-                            },
-                            signOut: async () => { setUserAuth(null); setUserEmail('Not Logged In'); setCurrentView(TEST_TYPES.LOGIN); },
-                            authInstance: 'mock_auth', dbInstance: 'mock_db',
-                            setDocFunc: async () => {}, collection: () => ({}), addDoc: async () => ({ id: 'mock_' + Date.now() }), getDocs: async () => ([]),
-                            deleteDocFunc: async () => {}, docFunc: () => ({}), getDocFunc: async () => ({ exists: () => true, data: () => ({}) })
-                        };
-                        setFirebaseMethods(mockMethods);
+                                } catch(e) {
+                        console.error("Firebase initialization failed", e);
+                        setFirebaseMethods(null);
+                        setFirebaseDb(null);
+                        setFirebaseError("Firebase is not configured. Add your Firebase Web App config in firebase-config.js.");
                     }
                 };
                 initCloudDB();
@@ -2939,7 +2911,7 @@
                         <main className={`flex-1 overflow-y-auto ${isTesting || currentView === TEST_TYPES.LOGIN ? 'test-fullscreen p-0' : 'p-6 md:p-10'}`}>
                             
                             {currentView === TEST_TYPES.LOGIN && (
-                                <LoginView authMethods={firebaseMethods} authInstance={firebaseMethods?.authInstance} user={userAuth} />
+                                <LoginView authMethods={firebaseMethods} authInstance={firebaseMethods?.authInstance} user={userAuth} firebaseError={firebaseError} />
                             )}
 
                             {currentView === TEST_TYPES.TEST_GENERATOR && isMaster && (
